@@ -5,4 +5,7 @@ module.exports = {
   testMatch: ['**/*.test.ts'],
   collectCoverageFrom: ['src/**/*.ts'],
   coverageReporters: ['text', 'lcov'],
+  moduleNameMapper: {
+    '^(.*)\\.js$': '$1',
+  },
 };
