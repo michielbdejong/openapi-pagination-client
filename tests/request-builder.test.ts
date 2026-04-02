@@ -259,3 +259,42 @@ describe("applyParamsToRequest", () => {
     expect(url.startsWith("https://api.example.com/items/")).toBeTrue();
   });
 });
+
+describe("buildFirstPageParams / buildNextPageParams — headerFields", () => {
+  it("injects pageToken into a request header field", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageToken",
+      request: {
+        headerFields: {
+          "X-Page-Token": { role: "pageToken" },
+        },
+      },
+    };
+
+    // First page: no token → header should be absent
+    const first = buildFirstPageParams(scheme, {});
+    expect(Object.keys(first.headerFields)).toHaveLength(0);
+
+    // Next page: token present → injected as a header string
+    const next = buildNextPageParams(scheme, {
+      previousToken: "myToken",
+      previousPage: null,
+    });
+    expect(next?.headerFields["X-Page-Token"]).toBe("myToken");
+  });
+
+  it("injects pageSize into a request header field", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageNumber",
+      request: {
+        headerFields: {
+          "X-Page":  { role: "page" },
+          "X-Limit": { role: "pageSize" },
+        },
+      },
+    };
+    const params = buildFirstPageParams(scheme, { pageSize: 50 });
+    expect(params.headerFields["X-Page"]).toBe("1");
+    expect(params.headerFields["X-Limit"]).toBe("50");
+  });
+});
