@@ -354,3 +354,93 @@ describe("buildNextFromState", () => {
     expect(Object.keys(params!.queryParameters)).toHaveLength(0);
   });
 });
+
+describe("parseResponse — non-nextLink response header roles", () => {
+  it("extracts numeric state (currentPage, totalCount) from response headers", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageNumber",
+      request: { queryParameters: { page: { role: "page" } } },
+      response: {
+        headers: {
+          "X-Current-Page": { role: "currentPage" },
+          "X-Total-Count":  { role: "totalCount" },
+          "X-Total-Pages":  { role: "totalPages" },
+        },
+      },
+    };
+    const state = parseResponse(scheme, {}, {
+      "X-Current-Page": "3",
+      "X-Total-Count": "100",
+      "X-Total-Pages": "10",
+    });
+    expect(state.currentPage).toBe(3);
+    expect(state.totalCount).toBe(100);
+    expect(state.totalPages).toBe(10);
+    expect(state.hasNextPage).toBeTrue();
+  });
+});
+
+describe("parseResponse — branch coverage", () => {
+  it("toNumberOrNull returns null for non-numeric string values", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageNumber",
+      request: { queryParameters: { page: { role: "page" } } },
+      response: {
+        bodyFields: {
+          total: { role: "totalCount" },
+          totalPages: { role: "totalPages" },
+          currentPage: { role: "currentPage" },
+        },
+      },
+    };
+    const state = parseResponse(scheme, {
+      total: "not-a-number",
+      totalPages: "also-bad",
+      currentPage: 1,
+    }, {});
+    expect(state.totalCount).toBeNull();
+    expect(state.totalPages).toBeNull();
+    expect(state.currentPage).toBe(1);
+  });
+
+  it("skips response body fields that have no role", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageNumber",
+      response: {
+        bodyFields: {
+          meta: {},  // no role
+          total: { role: "totalCount" },
+        },
+      },
+    };
+    const state = parseResponse(scheme, { meta: "ignored", total: 42 }, {});
+    expect(state.totalCount).toBe(42);
+  });
+
+  it("skips response header fields that have no role", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageNumber",
+      response: {
+        headers: {
+          "X-Meta": {},  // no role
+          "X-Total": { role: "totalCount" },
+        },
+      },
+    };
+    const state = parseResponse(scheme, {}, { "X-Meta": "ignored", "X-Total": "99" });
+    expect(state.totalCount).toBe(99);
+  });
+});
+
+describe("parseLinkHeader — malformed entries", () => {
+  it("skips entries that do not match the <url> format", () => {
+    // 'bad-entry' has no angle brackets, so urlMatch will be null → continue
+    const result = parseLinkHeader('bad-entry; rel="next", <https://example.com/2>; rel="next"');
+    expect(result).toBe("https://example.com/2");
+  });
+
+  it("returns null when no rel=next is found", () => {
+    const result = parseLinkHeader('<https://example.com/1>; rel="prev"');
+    expect(result).toBeNull();
+  });
+});

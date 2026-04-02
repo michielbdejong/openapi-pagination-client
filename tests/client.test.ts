@@ -523,3 +523,262 @@ describe("PaginatedClient.detectSchemesForOperation()", () => {
     expect(detected).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// defaultFetcher (no custom fetcher supplied)
+// ---------------------------------------------------------------------------
+
+describe("PaginatedClient — defaultFetcher", () => {
+  it("throws when globalThis.fetch is not available", async () => {
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+    Object.defineProperty(globalThis, "fetch", {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const client = new PaginatedClient({
+        baseUrl: "https://api.example.com",
+        schemes,
+      });
+      let errMsg = "";
+      try {
+        await client.fetchPage("/products", "pageNumber");
+      } catch (e) {
+        errMsg = (e as Error).message;
+      }
+      expect(errMsg).toContain("No global fetch available");
+    } finally {
+      if (orig) {
+        Object.defineProperty(globalThis, "fetch", orig);
+      } else {
+        // @ts-expect-error restoring undefined
+        delete globalThis.fetch;
+      }
+    }
+  });
+
+  it("throws on non-ok HTTP response", async () => {
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+    Object.defineProperty(globalThis, "fetch", {
+      value: async () => ({
+        ok: false,
+        status: 404,
+        statusText: "Not Found",
+        headers: { forEach: () => {} },
+        json: async () => ({}),
+      }),
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const client = new PaginatedClient({
+        baseUrl: "https://api.example.com",
+        schemes,
+      });
+      let errMsg = "";
+      try {
+        await client.fetchPage("/products", "pageNumber");
+      } catch (e) {
+        errMsg = (e as Error).message;
+      }
+      expect(errMsg).toContain("404");
+    } finally {
+      if (orig) Object.defineProperty(globalThis, "fetch", orig);
+    }
+  });
+
+  it("succeeds and returns items when globalThis.fetch resolves ok", async () => {
+    const orig = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+    Object.defineProperty(globalThis, "fetch", {
+      value: async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: {
+          forEach: (cb: (v: string, k: string) => void) => {
+            cb("application/json", "content-type");
+          },
+        },
+        json: async () => ({ items: [{ id: 1 }], currentPage: 1, total: 1, totalPages: 1 }),
+      }),
+      configurable: true,
+      writable: true,
+    });
+    try {
+      const client = new PaginatedClient({
+        baseUrl: "https://api.example.com",
+        schemes,
+      });
+      const page = await client.fetchPage<{ id: number }>("/products", "pageNumber");
+      expect(page.items).toHaveLength(1);
+    } finally {
+      if (orig) Object.defineProperty(globalThis, "fetch", orig);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractItems fallback
+// ---------------------------------------------------------------------------
+
+describe("PaginatedClient — extractItems edge cases", () => {
+  it("returns empty items when body has no recognized items field", async () => {
+    const { fetcher } = makeMockFetcher([
+      { body: { foo: "bar", currentPage: 1, total: 0, totalPages: 0 } },
+    ]);
+    const client = new PaginatedClient({ baseUrl: "https://api.example.com", schemes, fetcher });
+    const page = await client.fetchPage<{ id: number }>("/products", "pageNumber");
+    expect(page.items).toHaveLength(0);
+  });
+
+  it("uses itemsField option even when body has no array at that key", async () => {
+    const { fetcher } = makeMockFetcher([
+      { body: { currentPage: 1, total: 0, totalPages: 0 } },
+    ]);
+    const client = new PaginatedClient({ baseUrl: "https://api.example.com", schemes, fetcher });
+    const page = await client.fetchPage<{ id: number }>("/products", "pageNumber", null, {
+      itemsField: "missing",
+    });
+    expect(page.items).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchPage — options.page (jump to a specific page number)
+// ---------------------------------------------------------------------------
+
+describe("PaginatedClient.fetchPage — options.page", () => {
+  it("jumps to the requested page number", async () => {
+    const { fetcher, calls } = makeMockFetcher([
+      { body: { items: [makeProduct(5)], currentPage: 3, total: 10, totalPages: 5 } },
+    ]);
+    const client = new PaginatedClient({ baseUrl: "https://api.example.com", schemes, fetcher });
+    await client.fetchPage("/products", "pageNumber", null, { page: 3 });
+    expect(new URL(calls[0]!.url).searchParams.get("page")).toBe("3");
+  });
+
+  it("uses page 1 when options.page is 1 (same as default)", async () => {
+    const { fetcher, calls } = makeMockFetcher([
+      { body: { items: [], currentPage: 1, total: 0, totalPages: 0 } },
+    ]);
+    const client = new PaginatedClient({ baseUrl: "https://api.example.com", schemes, fetcher });
+    await client.fetchPage("/products", "pageNumber", null, { page: 1 });
+    expect(new URL(calls[0]!.url).searchParams.get("page")).toBe("1");
+  });
+
+  it("handles options.page when scheme has no 'page' role field", async () => {
+    // findRequestFieldByRole returns null → no override applied, first-page params used
+    const noPageRoleSchemes: PaginationSchemesMap = {
+      pageNumber: {
+        type: "pageNumber",
+        request: {
+          queryParameters: {
+            limit: { role: "pageSize" },
+          },
+        },
+        response: {
+          bodyFields: { total: { role: "totalCount" } },
+        },
+      },
+    };
+    const { fetcher, calls } = makeMockFetcher([
+      { body: { total: 0 } },
+    ]);
+    const client = new PaginatedClient({
+      baseUrl: "https://api.example.com",
+      schemes: noPageRoleSchemes,
+      fetcher,
+    });
+    await client.fetchPage("/products", "pageNumber", null, { page: 3 });
+    // No page param since the scheme has no page role field
+    expect(new URL(calls[0]!.url).searchParams.has("page")).toBeFalse();
+  });
+
+  it("uses an absolute URL as path directly without prepending baseUrl", async () => {
+    const { fetcher, calls } = makeMockFetcher([
+      { body: { items: [makeProduct(1)], currentPage: 1, total: 1, totalPages: 1 } },
+    ]);
+    const client = new PaginatedClient({ baseUrl: "https://api.example.com", schemes, fetcher });
+    await client.fetchPage("https://other.example.com/products", "pageNumber");
+    expect(new URL(calls[0]!.url).hostname).toBe("other.example.com");
+  });
+
+  it("options.page on a scheme with no request fields uses fallback params", async () => {
+    // Covers findRequestFieldByRole branch where request?.queryParameters is undefined
+    const schemesNoReq: PaginationSchemesMap = {
+      pageNumber: {
+        type: "pageNumber",
+        response: {
+          bodyFields: { total: { role: "totalCount" } },
+        },
+      },
+    };
+    const { fetcher, calls } = makeMockFetcher([{ body: { total: 0 } }]);
+    const client = new PaginatedClient({
+      baseUrl: "https://api.example.com",
+      schemes: schemesNoReq,
+      fetcher,
+    });
+    // Should not throw; no page param injected since no page role field
+    await client.fetchPage("/products", "pageNumber", null, { page: 2 });
+    expect(calls).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchPage — options.pageToken (supply continuation token directly)
+// ---------------------------------------------------------------------------
+
+describe("PaginatedClient.fetchPage — options.pageToken", () => {
+  it("sends the supplied pageToken on the request", async () => {
+    const { fetcher, calls } = makeMockFetcher([
+      { body: { items: [makeProduct(1)], nextPageToken: null } },
+    ]);
+    const client = new PaginatedClient({ baseUrl: "https://api.example.com", schemes, fetcher });
+    await client.fetchPage("/events", "pageToken", null, { pageToken: "jump-token" });
+    expect(new URL(calls[0]!.url).searchParams.get("pageToken")).toBe("jump-token");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchPage — POST request when scheme uses bodyFields
+// ---------------------------------------------------------------------------
+
+describe("PaginatedClient.fetchPage — POST with body fields", () => {
+  const bodySchemes: PaginationSchemesMap = {
+    pageNumber: {
+      type: "pageNumber",
+      request: {
+        bodyFields: {
+          pg: { role: "page" },
+        },
+      },
+      response: {
+        bodyFields: {
+          total: { role: "totalCount" },
+          totalPages: { role: "totalPages" },
+          currentPage: { role: "currentPage" },
+        },
+      },
+    },
+  };
+
+  it("sends a POST with Content-Type and JSON body when bodyFields are present", async () => {
+    let capturedInit: { method?: string; headers?: Record<string, string>; body?: string } = {};
+    const fetcher = async (url: string, init?: typeof capturedInit) => {
+      capturedInit = init ?? {};
+      return { body: { currentPage: 1, total: 1, totalPages: 1, results: [makeProduct(1)] }, headers: {} };
+    };
+    const client = new PaginatedClient({
+      baseUrl: "https://api.example.com",
+      schemes: bodySchemes,
+      fetcher,
+    });
+    await client.fetchPage<{ id: number }>("/products", "pageNumber", null, { itemsField: "results" });
+    expect(capturedInit.method).toBe("POST");
+    expect(capturedInit.headers?.["Content-Type"]).toBe("application/json");
+    const body = JSON.parse(capturedInit.body ?? "{}");
+    expect(body["pg"]).toBe(1);
+  });
+});

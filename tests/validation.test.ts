@@ -203,3 +203,54 @@ describe("validateSchemesMap", () => {
     expect(() => validateSchemesMap({})).not.toThrow();
   });
 });
+
+describe("validateScheme — request bodyFields and headerFields", () => {
+  it("validates roles in request bodyFields", () => {
+    const bad: PaginationSchemeObject = {
+      type: "pageNumber",
+      request: {
+        bodyFields: {
+          pg: { role: "badRole" as never },
+        },
+      },
+    };
+    expect(() => validateScheme(bad, "x")).toThrow("Unknown request role");
+  });
+
+  it("accepts valid roles in request bodyFields", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageNumber",
+      request: {
+        bodyFields: {
+          pg: { role: "page" },
+          sz: { role: "pageSize" },
+        },
+      },
+    };
+    expect(() => validateScheme(scheme, "x")).not.toThrow();
+  });
+
+  it("validates roles in request headerFields", () => {
+    const bad: PaginationSchemeObject = {
+      type: "pageToken",
+      request: {
+        headerFields: {
+          "X-Token": { role: "badRole" as never },
+        },
+      },
+    };
+    expect(() => validateScheme(bad, "x")).toThrow("Unknown request role");
+  });
+
+  it("accepts valid roles in request headerFields", () => {
+    const scheme: PaginationSchemeObject = {
+      type: "pageToken",
+      request: {
+        headerFields: {
+          "X-Token": { role: "pageToken" },
+        },
+      },
+    };
+    expect(() => validateScheme(scheme, "x")).not.toThrow();
+  });
+});
